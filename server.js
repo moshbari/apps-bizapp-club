@@ -120,9 +120,10 @@ async function getThisApp() {
   return coolify('GET', `/api/v1/applications/${COOLIFY_APP_UUID}`);
 }
 async function setAppFqdns(fqdns) {
-  // PATCH with the full new list of comma-separated FQDNs
+  // PATCH with the full new list of comma-separated domains.
+  // Coolify's PATCH endpoint exposes this field as `domains` (not `fqdn`).
   return coolify('PATCH', `/api/v1/applications/${COOLIFY_APP_UUID}`, {
-    fqdn: fqdns.join(','),
+    domains: fqdns.join(','),
   });
 }
 async function attachFqdn(fqdn) {
