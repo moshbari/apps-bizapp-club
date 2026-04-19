@@ -94,7 +94,7 @@ const api = async (path, opts = {}) => {
   return data;
 };
 const $ = (sel, root = document) => root.querySelector(sel);
-const state = { user: null, tab: 'react', react: [], html: [], meta: { parentDomain: 'apps.bizapp.club' } };
+const state = { user: null, tab: 'react', react: [], html: [], meta: { parentDomain: 'apps.bizapp.club', appDomain: 'bizapp.club' } };
 
 function toast(msg, kind = 'ok') {
   const el = $('#toast');
@@ -177,7 +177,7 @@ function renderDashboard() {
   const isAdmin = state.user?.role === 'admin';
   $('#view').innerHTML = `
     <div class="hero">
-      <h1>Deploy an app to <span style="color:var(--accent)">*.${state.meta.parentDomain}</span></h1>
+      <h1>Deploy an app to <span style="color:var(--accent)">*.${state.meta.appDomain || state.meta.parentDomain}</span></h1>
       <div class="muted">React components or raw HTML — each gets its own subdomain with TLS.</div>
     </div>
     <div class="tabs">

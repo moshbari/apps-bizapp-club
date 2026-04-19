@@ -28,7 +28,17 @@ process.on('unhandledRejection', (reason) => {
 
 // -------- config --------
 const PORT = parseInt(process.env.PORT || '3000', 10);
+// PARENT_DOMAIN = where the dashboard lives (e.g. apps.bizapp.club)
 const PARENT_DOMAIN = process.env.PARENT_DOMAIN || 'apps.bizapp.club';
+// APP_DOMAIN = suffix for child apps (e.g. bizapp.club → debtdua1.bizapp.club).
+// Defaults to PARENT_DOMAIN for the nested layout (debtdua1.apps.bizapp.club).
+const APP_DOMAIN = process.env.APP_DOMAIN || PARENT_DOMAIN;
+// DASHBOARD_SUB: the label of PARENT_DOMAIN inside APP_DOMAIN (reserved name).
+// e.g. PARENT='apps.bizapp.club', APP='bizapp.club' → 'apps'
+const DASHBOARD_SUB = (PARENT_DOMAIN !== APP_DOMAIN && PARENT_DOMAIN.endsWith('.' + APP_DOMAIN))
+  ? PARENT_DOMAIN.slice(0, -(1 + APP_DOMAIN.length))
+  : null;
+const RESERVED_SUBS = new Set([DASHBOARD_SUB, 'www', 'mail', 'api', 'admin', 'ftp', 'smtp', 'pop', 'imap', 'ns1', 'ns2'].filter(Boolean));
 const DATA_DIR = process.env.DATA_DIR || path.join(__dirname, 'data');
 const COOLIFY_API_URL = (process.env.COOLIFY_API_URL || '').replace(/\/+$/, '');
 const COOLIFY_API_TOKEN = process.env.COOLIFY_API_TOKEN || '';
@@ -86,7 +96,10 @@ function sanitizeName(name) {
     .slice(0, 32);
 }
 function getDomain(name) {
-  return `${name}.${PARENT_DOMAIN}`;
+  return `${name}.${APP_DOMAIN}`;
+}
+function isReservedName(name) {
+  return RESERVED_SUBS.has(name);
 }
 function siteDir(name) {
   return path.join(SITES_DIR, name);
@@ -164,6 +177,29 @@ async function detachFqdn(fqdn) {
   return { ok: true };
 }
 
+// -------- migration: recompute .domain on existing apps when APP_DOMAIN changes --------
+async function migrateAppDomains() {
+  const apps = readJsonSync(APPS_FILE, {});
+  const html = readJsonSync(HTML_APPS_FILE, {});
+  let touchedApps = false, touchedHtml = false;
+  for (const a of Object.values(apps)) {
+    const want = getDomain(a.name);
+    if (a.domain !== want) {
+      console.log(`[migrate] react ${a.name}: ${a.domain} -> ${want}`);
+      a.domain = want; touchedApps = true;
+    }
+  }
+  for (const a of Object.values(html)) {
+    const want = getDomain(a.name);
+    if (a.domain !== want) {
+      console.log(`[migrate] html  ${a.name}: ${a.domain} -> ${want}`);
+      a.domain = want; touchedHtml = true;
+    }
+  }
+  if (touchedApps) await writeJson(APPS_FILE, apps);
+  if (touchedHtml) await writeJson(HTML_APPS_FILE, html);
+}
+
 // -------- bootstrap admin --------
 async function ensureBootstrapAdmin() {
   const users = readJsonSync(USERS_FILE, {});
@@ -192,25 +228,36 @@ app.set('trust proxy', 1);
 app.use(express.json({ limit: '5mb' }));
 app.use(cookieParser());
 
-// host-based static serving for child apps must come BEFORE the dashboard
+// host-based static serving for child apps must come BEFORE the dashboard.
+// Priority:
+//   1. exact PARENT_DOMAIN / localhost → dashboard
+//   2. <sub>.APP_DOMAIN (flat layout) → child app, sub cannot contain a dot
+//   3. <sub>.PARENT_DOMAIN (legacy nested layout) → child app, same rules
+// This dual-matching lets us support both layouts during transition.
 app.use((req, res, next) => {
   const host = String(req.headers.host || '').toLowerCase().split(':')[0];
-  // dashboard host(s)
   if (host === PARENT_DOMAIN || host === '' || host === '127.0.0.1' || host === 'localhost') {
     return next();
   }
-  // child apps: <name>.<PARENT_DOMAIN>
-  const parentSuffix = '.' + PARENT_DOMAIN;
-  if (!host.endsWith(parentSuffix)) return next();
-  const sub = host.slice(0, -parentSuffix.length);
-  if (!sub || sub.includes('.')) return next();
+  const suffixes = [];
+  if (APP_DOMAIN) suffixes.push('.' + APP_DOMAIN);
+  if (PARENT_DOMAIN !== APP_DOMAIN) suffixes.push('.' + PARENT_DOMAIN);
+  let sub = null;
+  for (const suf of suffixes) {
+    if (host.endsWith(suf)) {
+      const candidate = host.slice(0, -suf.length);
+      if (candidate && !candidate.includes('.')) { sub = candidate; break; }
+    }
+  }
+  if (!sub) return next();
+  // skip reserved names — they fall through to the dashboard routes (likely 404/ dashboard SPA)
+  if (isReservedName(sub)) return next();
   const dir = siteDir(sub);
   if (!fs.existsSync(dir)) {
-    return res.status(404).type('text/html').send(`<!doctype html><meta charset=utf-8><title>Not deployed</title><body style="font-family:system-ui;padding:2rem"><h1>${sub}.${PARENT_DOMAIN}</h1><p>This subdomain is registered but no bundle has been deployed yet.</p>`);
+    return res.status(404).type('text/html').send(`<!doctype html><meta charset=utf-8><title>Not deployed</title><body style="font-family:system-ui;padding:2rem"><h1>${sub}.${APP_DOMAIN}</h1><p>This subdomain is registered but no bundle has been deployed yet.</p>`);
   }
   return express.static(dir, { fallthrough: false, index: 'index.html' })(req, res, (err) => {
     if (err) {
-      // SPA fallback for client-side routes
       const indexPath = path.join(dir, 'index.html');
       if (fs.existsSync(indexPath)) return res.sendFile(indexPath);
       return res.status(404).send('Not found');
@@ -384,6 +431,7 @@ app.post('/api/apps', authRequired, async (req, res) => {
     const { name, code } = req.body || {};
     const n = sanitizeName(name);
     if (!n) return res.status(400).json({ error: 'invalid name' });
+    if (isReservedName(n)) return res.status(400).json({ error: `"${n}" is a reserved name` });
     const err = validateReactCode(code);
     if (err) return res.status(400).json({ error: err });
     const apps = readJsonSync(APPS_FILE, {});
@@ -458,6 +506,7 @@ app.post('/api/html-apps', authRequired, async (req, res) => {
     const { name, html: body } = req.body || {};
     const n = sanitizeName(name);
     if (!n) return res.status(400).json({ error: 'invalid name' });
+    if (isReservedName(n)) return res.status(400).json({ error: `"${n}" is a reserved name` });
     if (!body || typeof body !== 'string' || body.length < 10) return res.status(400).json({ error: 'html required' });
     const apps = readJsonSync(APPS_FILE, {});
     const html = readJsonSync(HTML_APPS_FILE, {});
@@ -516,12 +565,13 @@ app.get('/api/health', (_req, res) => {
   res.json({
     ok: true,
     parentDomain: PARENT_DOMAIN,
+    appDomain: APP_DOMAIN,
     coolifyConfigured: Boolean(COOLIFY_API_URL && COOLIFY_API_TOKEN && COOLIFY_APP_UUID),
     time: new Date().toISOString(),
   });
 });
 app.get('/api/meta', (_req, res) => {
-  res.json({ parentDomain: PARENT_DOMAIN });
+  res.json({ parentDomain: PARENT_DOMAIN, appDomain: APP_DOMAIN });
 });
 
 // -------- static dashboard + SPA fallback --------
@@ -531,11 +581,15 @@ app.get(/^\/(?!api\/).*/, (_req, res) => {
 });
 
 // -------- start --------
-ensureBootstrapAdmin().then(() => {
-  app.listen(PORT, '0.0.0.0', () => {
-    console.log(`[apps.${PARENT_DOMAIN.replace(/^apps\./, '')}] listening on :${PORT}`);
-    console.log(`  parent domain: ${PARENT_DOMAIN}`);
-    console.log(`  data dir:      ${DATA_DIR}`);
-    console.log(`  coolify api:   ${COOLIFY_API_URL ? 'configured' : 'NOT configured'}`);
+Promise.resolve()
+  .then(() => ensureBootstrapAdmin())
+  .then(() => migrateAppDomains())
+  .then(() => {
+    app.listen(PORT, '0.0.0.0', () => {
+      console.log(`[deployer] listening on :${PORT}`);
+      console.log(`  dashboard host: ${PARENT_DOMAIN}`);
+      console.log(`  child suffix:   ${APP_DOMAIN} (apps live at <name>.${APP_DOMAIN})`);
+      console.log(`  data dir:       ${DATA_DIR}`);
+      console.log(`  coolify api:    ${COOLIFY_API_URL ? 'configured' : 'NOT configured'}`);
+    });
   });
-});
