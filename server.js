@@ -332,6 +332,39 @@ app.get('/api/auth-check', authRequired, (req, res) => {
   res.json({ ok: true, user: { username: req.user.username, role: req.user.role } });
 });
 
+// -------- change own password --------
+app.post('/api/change-password', authRequired, async (req, res) => {
+  const { oldPassword, newPassword } = req.body || {};
+  if (!oldPassword || !newPassword) return res.status(400).json({ error: 'oldPassword and newPassword required' });
+  if (String(newPassword).length < 8) return res.status(400).json({ error: 'newPassword must be at least 8 characters' });
+  const users = readJsonSync(USERS_FILE, {});
+  const user = users[req.user.username];
+  if (!user || !verifyPassword(oldPassword, user.password)) {
+    return res.status(401).json({ error: 'invalid old password' });
+  }
+  user.password = hashPassword(newPassword);
+  user.updatedAt = new Date().toISOString();
+  await writeJson(USERS_FILE, users);
+  // invalidate other sessions for this user
+  for (const [tok, s] of sessions) if (s.username === user.username) sessions.delete(tok);
+  res.clearCookie('token');
+  res.json({ ok: true, message: 'password changed — please log in again' });
+});
+
+// -------- admin: reset another user's password --------
+app.post('/api/admin/users/:username/reset-password', authRequired, adminOnly, async (req, res) => {
+  const { newPassword } = req.body || {};
+  if (!newPassword || String(newPassword).length < 8) return res.status(400).json({ error: 'newPassword must be at least 8 characters' });
+  const users = readJsonSync(USERS_FILE, {});
+  const u = users[req.params.username];
+  if (!u) return res.status(404).json({ error: 'not found' });
+  u.password = hashPassword(newPassword);
+  u.updatedAt = new Date().toISOString();
+  await writeJson(USERS_FILE, users);
+  for (const [tok, s] of sessions) if (s.username === u.username) sessions.delete(tok);
+  res.json({ ok: true });
+});
+
 // -------- admin: users --------
 app.get('/api/admin/users', authRequired, adminOnly, (_req, res) => {
   const users = readJsonSync(USERS_FILE, {});
