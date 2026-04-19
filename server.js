@@ -122,9 +122,16 @@ async function getThisApp() {
 async function setAppFqdns(fqdns) {
   // PATCH with the full new list of comma-separated domains.
   // Coolify's PATCH endpoint exposes this field as `domains` (not `fqdn`).
-  return coolify('PATCH', `/api/v1/applications/${COOLIFY_APP_UUID}`, {
+  const r = await coolify('PATCH', `/api/v1/applications/${COOLIFY_APP_UUID}`, {
     domains: fqdns.join(','),
   });
+  // Trigger a container restart so Traefik picks up the new host labels
+  // and Let's Encrypt issues the cert for the new FQDN. Fire-and-forget —
+  // Coolify returns quickly and the actual restart happens async.
+  coolify('POST', `/api/v1/applications/${COOLIFY_APP_UUID}/restart`).catch((e) => {
+    console.error('[restart after fqdn change]', e.message);
+  });
+  return r;
 }
 async function attachFqdn(fqdn) {
   const app = await getThisApp();
