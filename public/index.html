@@ -1,0 +1,393 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>apps.bizapp.club — deployer</title>
+<style>
+  :root {
+    --bg: #0b0d12;
+    --panel: #141821;
+    --panel-2: #1b2130;
+    --border: #262d3d;
+    --text: #e6e9ef;
+    --muted: #8a93a6;
+    --accent: #5b9dff;
+    --accent-2: #7c5bff;
+    --danger: #ff6171;
+    --ok: #3ecf8e;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; background: var(--bg); color: var(--text);
+    font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+  a { color: var(--accent); }
+  button { cursor: pointer; font: inherit; }
+  input, textarea, select {
+    width: 100%; background: #0e1119; color: var(--text);
+    border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px; font: inherit;
+  }
+  textarea { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 13px; min-height: 240px; }
+  .btn {
+    background: linear-gradient(135deg, var(--accent), var(--accent-2));
+    color: white; border: 0; border-radius: 8px; padding: 10px 14px; font-weight: 600;
+  }
+  .btn.secondary { background: var(--panel-2); border: 1px solid var(--border); color: var(--text); }
+  .btn.danger { background: var(--danger); }
+  .btn:disabled { opacity: 0.5; cursor: not-allowed; }
+  .row { display: flex; gap: 12px; align-items: center; }
+  .grid { display: grid; gap: 16px; }
+  .muted { color: var(--muted); }
+  .panel { background: var(--panel); border: 1px solid var(--border); border-radius: 12px; padding: 20px; }
+  .tag { display: inline-block; padding: 2px 8px; border-radius: 999px; font-size: 12px;
+         border: 1px solid var(--border); background: var(--panel-2); }
+  .tag.ok { color: var(--ok); border-color: #1f4a3a; background: #0f2218; }
+  .tag.warn { color: #ffc857; border-color: #4a3d1f; background: #221a0f; }
+  header.top {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 14px 24px; border-bottom: 1px solid var(--border); background: #0c0f17;
+    position: sticky; top: 0; z-index: 10;
+  }
+  header.top .brand { font-weight: 700; letter-spacing: .2px; }
+  main { max-width: 1080px; margin: 0 auto; padding: 24px; }
+  .tabs { display: flex; gap: 4px; margin-bottom: 16px; }
+  .tabs button { background: transparent; color: var(--muted); border: 0; padding: 10px 14px;
+                 border-bottom: 2px solid transparent; font-weight: 600; }
+  .tabs button.active { color: var(--text); border-bottom-color: var(--accent); }
+  table { width: 100%; border-collapse: collapse; }
+  th, td { text-align: left; padding: 10px 12px; border-bottom: 1px solid var(--border); }
+  th { color: var(--muted); font-weight: 500; font-size: 13px; }
+  .toast {
+    position: fixed; bottom: 20px; right: 20px; padding: 12px 16px;
+    background: var(--panel-2); border: 1px solid var(--border); border-radius: 10px; max-width: 360px;
+  }
+  .toast.error { border-color: #5a2029; background: #2a0f13; }
+  .toast.ok { border-color: #1f4a3a; background: #0f2218; }
+  .modal-bg { position: fixed; inset: 0; background: rgba(0,0,0,.55); display: grid; place-items: center; z-index: 20; }
+  .modal { width: min(900px, 96vw); max-height: 90vh; overflow: auto; background: var(--panel);
+           border: 1px solid var(--border); border-radius: 12px; padding: 20px; }
+  .hero { padding: 32px 24px; text-align: center; }
+  .hero h1 { margin: 0 0 8px; font-size: 26px; }
+  .auth-card { max-width: 420px; margin: 48px auto; }
+  .actions { display: flex; gap: 8px; flex-wrap: wrap; }
+  .code-label { font-size: 12px; color: var(--muted); margin-bottom: 4px; display: block; }
+</style>
+</head>
+<body>
+<header class="top">
+  <div class="brand">apps.bizapp.club <span class="muted">deployer</span></div>
+  <div id="userBox" class="row"></div>
+</header>
+<main id="view"></main>
+<div id="toast"></div>
+
+<script>
+const api = async (path, opts = {}) => {
+  const res = await fetch(path, {
+    ...opts,
+    headers: { 'Content-Type': 'application/json', ...(opts.headers || {}) },
+    body: opts.body ? JSON.stringify(opts.body) : undefined,
+    credentials: 'same-origin',
+  });
+  const text = await res.text();
+  let data; try { data = text ? JSON.parse(text) : null; } catch { data = { raw: text }; }
+  if (!res.ok) throw Object.assign(new Error(data?.error || `HTTP ${res.status}`), { data });
+  return data;
+};
+const $ = (sel, root = document) => root.querySelector(sel);
+const state = { user: null, tab: 'react', react: [], html: [], meta: { parentDomain: 'apps.bizapp.club' } };
+
+function toast(msg, kind = 'ok') {
+  const el = $('#toast');
+  el.innerHTML = `<div class="toast ${kind}">${msg}</div>`;
+  setTimeout(() => { el.innerHTML = ''; }, 3800);
+}
+
+function renderUserBox() {
+  const box = $('#userBox');
+  if (!state.user) { box.innerHTML = ''; return; }
+  box.innerHTML = `
+    <span class="muted">${state.user.username} · ${state.user.role}</span>
+    <button class="btn secondary" id="btnLogout">Logout</button>`;
+  $('#btnLogout').onclick = logout;
+}
+
+async function logout() {
+  await api('/api/logout', { method: 'POST' });
+  state.user = null;
+  renderUserBox();
+  renderAuth();
+}
+
+function renderAuth() {
+  $('#view').innerHTML = `
+    <section class="panel auth-card">
+      <div class="tabs">
+        <button class="active" data-t="login">Log in</button>
+        <button data-t="register">Register</button>
+      </div>
+      <form id="authForm" class="grid" style="gap:10px">
+        <input name="username" placeholder="username" required autocomplete="username" />
+        <input name="password" placeholder="password" type="password" required autocomplete="current-password" />
+        <button class="btn" type="submit">Continue</button>
+        <div class="muted" id="authHint">Registered users need admin activation before their first login.</div>
+      </form>
+    </section>`;
+  let mode = 'login';
+  $('.tabs').onclick = (e) => {
+    const b = e.target.closest('button'); if (!b) return;
+    mode = b.dataset.t;
+    [...$('.tabs').children].forEach((x) => x.classList.toggle('active', x === b));
+    $('#authHint').textContent = mode === 'register'
+      ? 'New accounts are inactive until an admin activates them.'
+      : 'Log in with your existing credentials.';
+  };
+  $('#authForm').onsubmit = async (e) => {
+    e.preventDefault();
+    const fd = new FormData(e.target);
+    const body = { username: fd.get('username'), password: fd.get('password') };
+    try {
+      if (mode === 'register') {
+        const r = await api('/api/register', { method: 'POST', body });
+        toast(r.message || 'Registered');
+      } else {
+        const r = await api('/api/login', { method: 'POST', body });
+        state.user = r.user;
+        renderUserBox();
+        await refresh();
+      }
+    } catch (err) { toast(err.message, 'error'); }
+  };
+}
+
+async function refresh() {
+  try {
+    const [meta, reactApps, htmlApps] = await Promise.all([
+      api('/api/meta'),
+      api('/api/apps').catch(() => []),
+      api('/api/html-apps').catch(() => []),
+    ]);
+    state.meta = meta;
+    state.react = reactApps;
+    state.html = htmlApps;
+    renderDashboard();
+  } catch (err) { toast(err.message, 'error'); }
+}
+
+function renderDashboard() {
+  const isAdmin = state.user?.role === 'admin';
+  $('#view').innerHTML = `
+    <div class="hero">
+      <h1>Deploy an app to <span style="color:var(--accent)">*.${state.meta.parentDomain}</span></h1>
+      <div class="muted">React components or raw HTML — each gets its own subdomain with TLS.</div>
+    </div>
+    <div class="tabs">
+      <button data-t="react" class="${state.tab === 'react' ? 'active' : ''}">React apps (${state.react.length})</button>
+      <button data-t="html" class="${state.tab === 'html' ? 'active' : ''}">HTML apps (${state.html.length})</button>
+      ${isAdmin ? `<button data-t="admin" class="${state.tab === 'admin' ? 'active' : ''}">Admin</button>` : ''}
+    </div>
+    <section class="panel" id="tabPanel"></section>`;
+  $('.tabs').onclick = (e) => {
+    const b = e.target.closest('button'); if (!b) return;
+    state.tab = b.dataset.t; renderDashboard();
+  };
+  if (state.tab === 'react') renderReactTab();
+  else if (state.tab === 'html') renderHtmlTab();
+  else if (state.tab === 'admin') renderAdminTab();
+}
+
+function appRow(a) {
+  return `<tr>
+    <td><strong>${a.name}</strong></td>
+    <td><a href="https://${a.domain}" target="_blank" rel="noreferrer">${a.domain}</a></td>
+    <td class="muted">${a.owner}</td>
+    <td class="muted">${new Date(a.updatedAt).toLocaleString()}</td>
+    <td class="actions">
+      <button class="btn secondary" data-act="edit" data-name="${a.name}">Edit</button>
+      <button class="btn danger" data-act="del" data-name="${a.name}">Delete</button>
+    </td>
+  </tr>`;
+}
+
+function renderReactTab() {
+  $('#tabPanel').innerHTML = `
+    <div class="row" style="justify-content:space-between;margin-bottom:12px">
+      <h3 style="margin:0">React apps</h3>
+      <button class="btn" id="newReact">+ New React app</button>
+    </div>
+    ${state.react.length === 0 ? `<div class="muted">No React apps yet.</div>` : `
+    <table>
+      <thead><tr><th>Name</th><th>Domain</th><th>Owner</th><th>Updated</th><th></th></tr></thead>
+      <tbody>${state.react.map(appRow).join('')}</tbody>
+    </table>`}`;
+  $('#newReact').onclick = () => openReactModal();
+  $('#tabPanel tbody')?.addEventListener('click', async (e) => {
+    const b = e.target.closest('button'); if (!b) return;
+    const name = b.dataset.name;
+    if (b.dataset.act === 'edit') {
+      const a = await api(`/api/apps/${name}`);
+      openReactModal(a);
+    } else if (b.dataset.act === 'del') {
+      if (!confirm(`Delete ${name}?`)) return;
+      try { await api(`/api/apps/${name}`, { method: 'DELETE' }); toast('Deleted'); refresh(); }
+      catch (err) { toast(err.message, 'error'); }
+    }
+  });
+}
+
+function renderHtmlTab() {
+  $('#tabPanel').innerHTML = `
+    <div class="row" style="justify-content:space-between;margin-bottom:12px">
+      <h3 style="margin:0">HTML apps</h3>
+      <button class="btn" id="newHtml">+ New HTML app</button>
+    </div>
+    ${state.html.length === 0 ? `<div class="muted">No HTML apps yet.</div>` : `
+    <table>
+      <thead><tr><th>Name</th><th>Domain</th><th>Owner</th><th>Updated</th><th></th></tr></thead>
+      <tbody>${state.html.map(appRow).join('')}</tbody>
+    </table>`}`;
+  $('#newHtml').onclick = () => openHtmlModal();
+  $('#tabPanel tbody')?.addEventListener('click', async (e) => {
+    const b = e.target.closest('button'); if (!b) return;
+    const name = b.dataset.name;
+    if (b.dataset.act === 'edit') {
+      const a = await api(`/api/html-apps/${name}`);
+      openHtmlModal(a);
+    } else if (b.dataset.act === 'del') {
+      if (!confirm(`Delete ${name}?`)) return;
+      try { await api(`/api/html-apps/${name}`, { method: 'DELETE' }); toast('Deleted'); refresh(); }
+      catch (err) { toast(err.message, 'error'); }
+    }
+  });
+}
+
+async function renderAdminTab() {
+  const users = await api('/api/admin/users').catch(() => []);
+  $('#tabPanel').innerHTML = `
+    <h3 style="margin-top:0">Users</h3>
+    <table>
+      <thead><tr><th>Username</th><th>Role</th><th>Status</th><th>Created</th><th></th></tr></thead>
+      <tbody>
+        ${users.map((u) => `<tr>
+          <td><strong>${u.username}</strong></td>
+          <td>${u.role}</td>
+          <td>${u.active ? '<span class="tag ok">active</span>' : '<span class="tag warn">inactive</span>'}</td>
+          <td class="muted">${new Date(u.createdAt).toLocaleString()}</td>
+          <td class="actions">
+            <button class="btn secondary" data-act="toggle" data-name="${u.username}">${u.active ? 'Deactivate' : 'Activate'}</button>
+            ${u.role === 'admin' ? '' : `<button class="btn danger" data-act="del" data-name="${u.username}">Delete</button>`}
+          </td>
+        </tr>`).join('')}
+      </tbody>
+    </table>`;
+  $('#tabPanel tbody').addEventListener('click', async (e) => {
+    const b = e.target.closest('button'); if (!b) return;
+    const name = b.dataset.name;
+    try {
+      if (b.dataset.act === 'toggle') { await api(`/api/admin/users/${name}/toggle`, { method: 'POST' }); }
+      else if (b.dataset.act === 'del') {
+        if (!confirm(`Delete user ${name}?`)) return;
+        await api(`/api/admin/users/${name}`, { method: 'DELETE' });
+      }
+      renderAdminTab();
+    } catch (err) { toast(err.message, 'error'); }
+  });
+}
+
+function openModal(html, onOpen) {
+  const wrap = document.createElement('div');
+  wrap.className = 'modal-bg';
+  wrap.innerHTML = `<div class="modal">${html}</div>`;
+  wrap.addEventListener('click', (e) => { if (e.target === wrap) wrap.remove(); });
+  document.body.appendChild(wrap);
+  onOpen?.(wrap);
+  return wrap;
+}
+
+function openReactModal(existing) {
+  const sample = `export default function App() {
+  const [n, setN] = React.useState(0);
+  return (
+    <div style={{fontFamily:'system-ui',padding:32}}>
+      <h1>Hello from your React app</h1>
+      <button onClick={() => setN(n + 1)}>Clicked {n} times</button>
+    </div>
+  );
+}`;
+  const modal = openModal(`
+    <h3 style="margin-top:0">${existing ? 'Edit' : 'New'} React app</h3>
+    <div class="grid" style="gap:10px">
+      <div>
+        <span class="code-label">Subdomain name (a-z, 0-9, -)</span>
+        <input id="rName" value="${existing?.name || ''}" ${existing ? 'readonly' : ''} />
+      </div>
+      <div>
+        <span class="code-label">Component (must have <code>export default</code>)</span>
+        <textarea id="rCode" spellcheck="false">${existing?.code || sample}</textarea>
+      </div>
+      <div class="row" style="justify-content:flex-end;gap:8px">
+        <button class="btn secondary" id="rCancel">Cancel</button>
+        <button class="btn" id="rSave">${existing ? 'Save' : 'Deploy'}</button>
+      </div>
+    </div>`);
+  $('#rCancel', modal).onclick = () => modal.remove();
+  $('#rSave', modal).onclick = async () => {
+    const name = $('#rName', modal).value.trim();
+    const code = $('#rCode', modal).value;
+    try {
+      if (existing) await api(`/api/apps/${existing.name}`, { method: 'PUT', body: { code } });
+      else await api('/api/apps', { method: 'POST', body: { name, code } });
+      modal.remove();
+      toast(existing ? 'Saved' : 'Deployed');
+      refresh();
+    } catch (err) { toast(err.message, 'error'); }
+  };
+}
+
+function openHtmlModal(existing) {
+  const sample = `<!doctype html>
+<html><head><meta charset="utf-8"><title>Hello</title>
+<style>body{font-family:system-ui;padding:32px;background:#0b0d12;color:#e6e9ef}</style>
+</head><body><h1>Hello from your HTML page</h1></body></html>`;
+  const modal = openModal(`
+    <h3 style="margin-top:0">${existing ? 'Edit' : 'New'} HTML app</h3>
+    <div class="grid" style="gap:10px">
+      <div>
+        <span class="code-label">Subdomain name</span>
+        <input id="hName" value="${existing?.name || ''}" ${existing ? 'readonly' : ''} />
+      </div>
+      <div>
+        <span class="code-label">HTML body (full page)</span>
+        <textarea id="hHtml" spellcheck="false">${existing?.html || sample}</textarea>
+      </div>
+      <div class="row" style="justify-content:flex-end;gap:8px">
+        <button class="btn secondary" id="hCancel">Cancel</button>
+        <button class="btn" id="hSave">${existing ? 'Save' : 'Deploy'}</button>
+      </div>
+    </div>`);
+  $('#hCancel', modal).onclick = () => modal.remove();
+  $('#hSave', modal).onclick = async () => {
+    const name = $('#hName', modal).value.trim();
+    const html = $('#hHtml', modal).value;
+    try {
+      if (existing) await api(`/api/html-apps/${existing.name}`, { method: 'PUT', body: { html } });
+      else await api('/api/html-apps', { method: 'POST', body: { name, html } });
+      modal.remove();
+      toast(existing ? 'Saved' : 'Deployed');
+      refresh();
+    } catch (err) { toast(err.message, 'error'); }
+  };
+}
+
+(async function boot() {
+  try {
+    const r = await api('/api/auth-check');
+    state.user = r.user;
+    renderUserBox();
+    await refresh();
+  } catch {
+    renderAuth();
+  }
+})();
+</script>
+</body>
+</html>
