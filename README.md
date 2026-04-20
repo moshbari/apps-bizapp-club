@@ -7,21 +7,22 @@ deploy plumbing is Coolify + Traefik instead of HestiaCP shell-outs.
 ## How it works
 
 - One Express container serves both the dashboard and **every** child app.
-- Each child app gets a subdomain `<name>.apps.bizapp.club`.
+- Dashboard lives at `apps.bizapp.club`. Child apps are flat at `<name>.bizapp.club`.
 - When you deploy an app the server:
   1. Writes the bundle to `/data/sites/<name>/index.html`
-  2. Calls Coolify's API to attach `https://<name>.apps.bizapp.club` as an FQDN
+  2. Calls Coolify's API to attach `https://<name>.bizapp.club` as an FQDN
      of this very application — Traefik picks up the new host, and Coolify asks
      Let's Encrypt for a cert.
 - Incoming requests are routed by `Host:` header inside Express:
   - `apps.bizapp.club` → dashboard SPA
-  - `<sub>.apps.bizapp.club` → static files from `/data/sites/<sub>`
+  - `<sub>.bizapp.club` → static files from `/data/sites/<sub>`
 
 ## Required environment
 
 | Var | Required | Notes |
 |---|---|---|
-| `PARENT_DOMAIN` | yes | e.g. `apps.bizapp.club` |
+| `PARENT_DOMAIN` | yes | dashboard host, e.g. `apps.bizapp.club` |
+| `APP_DOMAIN` | yes | child-app suffix, e.g. `bizapp.club` (child apps become `<name>.bizapp.club`) |
 | `ADMIN_USERNAME` | first boot | bootstrap admin (created if no users exist) |
 | `ADMIN_PASSWORD` | first boot | bootstrap admin password |
 | `COOLIFY_API_URL` | yes | usually `http://coolify:8080` from inside Coolify's network |
