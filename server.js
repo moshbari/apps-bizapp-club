@@ -46,10 +46,20 @@ const COOLIFY_APP_UUID = process.env.COOLIFY_APP_UUID || '';
 const ADMIN_USERNAME = process.env.ADMIN_USERNAME || 'admin';
 const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || '';
 
+// Magic-link / passwordless config
+const RESEND_API_KEY = process.env.RESEND_API_KEY || '';
+const MAGIC_LINK_FROM = process.env.MAGIC_LINK_FROM || 'bizapp@onesign.click';
+const MAGIC_LINK_FROM_NAME = process.env.MAGIC_LINK_FROM_NAME || 'apps.bizapp.club';
+const BASE_URL = (process.env.BASE_URL || `https://${PARENT_DOMAIN}`).replace(/\/+$/, '');
+const MAGIC_TOKEN_TTL_MS = 24 * 3600 * 1000; // 24h
+
 const SITES_DIR = path.join(DATA_DIR, 'sites');
 const USERS_FILE = path.join(DATA_DIR, 'users.json');
 const APPS_FILE = path.join(DATA_DIR, 'apps.json');
 const HTML_APPS_FILE = path.join(DATA_DIR, 'html-apps.json');
+// Magic-token store: holds both pending-deploys (anonymous publish requests
+// awaiting email confirmation) AND login-links (existing user sign-in).
+const MAGIC_TOKENS_FILE = path.join(DATA_DIR, 'magic-tokens.json');
 
 // -------- storage helpers --------
 function ensureDirSync(dir) {
@@ -85,6 +95,110 @@ function verifyPassword(password, stored) {
   const a = Buffer.from(hash, 'hex');
   const b = Buffer.from(test, 'hex');
   return a.length === b.length && crypto.timingSafeEqual(a, b);
+}
+
+// -------- email + magic-link helpers --------
+function isEmail(s) {
+  return typeof s === 'string' && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(s.trim());
+}
+function normalizeEmail(s) {
+  return String(s || '').trim().toLowerCase();
+}
+
+async function sendEmail({ to, subject, html, text }) {
+  if (!RESEND_API_KEY) {
+    console.warn('[sendEmail] RESEND_API_KEY not set — would have sent to:', to, 'subject:', subject);
+    throw new Error('Email is not configured (RESEND_API_KEY missing)');
+  }
+  const from = MAGIC_LINK_FROM_NAME ? `${MAGIC_LINK_FROM_NAME} <${MAGIC_LINK_FROM}>` : MAGIC_LINK_FROM;
+  const res = await fetch('https://api.resend.com/emails', {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${RESEND_API_KEY}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({ from, to, subject, html, text }),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    const msg = data?.message || data?.error || `Resend ${res.status}`;
+    throw new Error(msg);
+  }
+  return data;
+}
+
+function magicLinkEmail({ link, intent, appType, appName, appDomain, expiresIn = '24 hours' }) {
+  // intent: 'deploy' | 'login'
+  const isDeploy = intent === 'deploy';
+  const heading = isDeploy ? 'Confirm and publish your app' : 'Sign in to apps.bizapp.club';
+  const lead = isDeploy
+    ? `Click the button below to publish <strong>${appName}</strong> at <a href="https://${appDomain}">${appDomain}</a> and view it live.`
+    : `Click the button below to sign in. This link expires in ${expiresIn}.`;
+  const cta = isDeploy ? 'Publish my app' : 'Sign in';
+  const subject = isDeploy
+    ? `Confirm and publish "${appName}"`
+    : 'Sign in to apps.bizapp.club';
+  const html = `<!doctype html><html><body style="font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;background:#f5f6f8;margin:0;padding:24px">
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="max-width:560px;margin:0 auto;background:white;border-radius:12px;border:1px solid #e2e5ec">
+  <tr><td style="padding:28px 28px 8px">
+    <h2 style="margin:0 0 12px;color:#0b0d12">${heading}</h2>
+    <p style="margin:0 0 18px;color:#3a4053;line-height:1.5">${lead}</p>
+    <p style="margin:0 0 24px"><a href="${link}" style="display:inline-block;background:#5b9dff;color:white;text-decoration:none;font-weight:600;padding:12px 22px;border-radius:8px">${cta}</a></p>
+    <p style="margin:0 0 6px;color:#6c7588;font-size:13px">If the button doesn't work, paste this link in your browser:</p>
+    <p style="margin:0;word-break:break-all"><a href="${link}" style="color:#5b9dff">${link}</a></p>
+    <hr style="border:none;border-top:1px solid #eef0f4;margin:22px 0" />
+    <p style="margin:0;color:#8a93a6;font-size:12px">This link expires in ${expiresIn}. If you didn't request it, you can ignore this email.</p>
+  </td></tr>
+</table></body></html>`;
+  const text = `${heading}\n\n${isDeploy ? `Click to publish "${appName}" at https://${appDomain}` : 'Click to sign in'}:\n${link}\n\nThis link expires in ${expiresIn}. If you didn't request it, you can ignore this email.`;
+  return { subject, html, text };
+}
+
+// Magic tokens: { token: { type, email, payload?, createdAt, expiresAt, usedAt? } }
+function readMagicTokens() { return readJsonSync(MAGIC_TOKENS_FILE, {}); }
+async function writeMagicTokens(d) { return writeJson(MAGIC_TOKENS_FILE, d); }
+function gcMagicTokens(d) {
+  const now = Date.now();
+  let changed = false;
+  for (const [tok, t] of Object.entries(d)) {
+    if (!t || (t.expiresAt && t.expiresAt < now) || (t.usedAt && (now - t.usedAt) > 24 * 3600 * 1000)) {
+      delete d[tok]; changed = true;
+    }
+  }
+  return changed;
+}
+async function createMagicToken({ type, email, payload }) {
+  const tokens = readMagicTokens();
+  if (gcMagicTokens(tokens)) await writeMagicTokens(tokens);
+  const token = crypto.randomBytes(32).toString('hex');
+  tokens[token] = {
+    type, email: normalizeEmail(email), payload: payload || null,
+    createdAt: Date.now(), expiresAt: Date.now() + MAGIC_TOKEN_TTL_MS,
+  };
+  await writeMagicTokens(tokens);
+  return token;
+}
+async function consumeMagicToken(token) {
+  const tokens = readMagicTokens();
+  const t = tokens[token];
+  if (!t) return null;
+  if (t.expiresAt && t.expiresAt < Date.now()) { delete tokens[token]; await writeMagicTokens(tokens); return null; }
+  if (t.usedAt) return null; // already used (single-use)
+  t.usedAt = Date.now();
+  await writeMagicTokens(tokens);
+  return t;
+}
+function pendingSubdomainsInUse() {
+  const tokens = readMagicTokens();
+  const now = Date.now();
+  const subs = new Set();
+  for (const t of Object.values(tokens)) {
+    if (t && t.type === 'pending-deploy' && !t.usedAt && (!t.expiresAt || t.expiresAt > now)) {
+      const sub = t.payload?.subdomain || t.payload?.name;
+      if (sub) subs.add(sub);
+    }
+  }
+  return subs;
 }
 
 // -------- naming / routing helpers --------
@@ -288,22 +402,9 @@ function adminOnly(req, res, next) {
 }
 
 // -------- auth routes --------
-app.post('/api/register', async (req, res) => {
-  const { username, password } = req.body || {};
-  if (!username || !password) return res.status(400).json({ error: 'username and password required' });
-  const u = sanitizeName(username);
-  if (!u) return res.status(400).json({ error: 'invalid username' });
-  const users = readJsonSync(USERS_FILE, {});
-  if (users[u]) return res.status(409).json({ error: 'username taken' });
-  users[u] = {
-    username: u,
-    password: hashPassword(password),
-    role: 'user',
-    active: false, // requires admin activation
-    createdAt: new Date().toISOString(),
-  };
-  await writeJson(USERS_FILE, users);
-  res.json({ ok: true, message: 'registered; awaiting admin activation' });
+app.post('/api/register', (_req, res) => {
+  // Public username+password signup is disabled. New users come in via magic link.
+  res.status(410).json({ error: 'public registration disabled — use email magic link instead' });
 });
 
 app.post('/api/login', (req, res) => {
@@ -318,8 +419,184 @@ app.post('/api/login', (req, res) => {
   const token = newToken();
   sessions.set(token, { username: user.username, createdAt: Date.now() });
   res.cookie('token', token, { httpOnly: true, sameSite: 'lax', secure: true, maxAge: 7 * 24 * 3600 * 1000 });
-  res.json({ ok: true, user: { username: user.username, role: user.role } });
+  res.json({ ok: true, user: { username: user.username, email: user.email || null, role: user.role } });
 });
+
+
+// -------- POST /api/login-link — send a magic-link to existing user by email --------
+app.post('/api/login-link', async (req, res) => {
+  try {
+    const email = normalizeEmail(req.body?.email);
+    if (!isEmail(email)) return res.status(400).json({ error: 'valid email required' });
+    const users = readJsonSync(USERS_FILE, {});
+    // find user keyed by email; users created via magic link use email as their key
+    let user = users[email];
+    // if missing, scan for user.email match (admin-created accounts that have an email field)
+    if (!user) {
+      for (const u of Object.values(users)) {
+        if (normalizeEmail(u.email) === email) { user = u; break; }
+      }
+    }
+    // for security, always return ok (do not leak whether the email exists)
+    if (!user || !user.active) {
+      return res.json({ ok: true, sent: false });
+    }
+    const token = await createMagicToken({ type: 'login-link', email, payload: { username: user.username } });
+    const link = `${BASE_URL}/auth/magic?token=${token}`;
+    const tpl = magicLinkEmail({ link, intent: 'login' });
+    try {
+      await sendEmail({ to: email, subject: tpl.subject, html: tpl.html, text: tpl.text });
+    } catch (e) {
+      console.error('[sendEmail/login-link]', e.message);
+      return res.status(500).json({ error: 'failed to send email: ' + e.message });
+    }
+    res.json({ ok: true, sent: true });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// -------- POST /api/pending — anonymous user wants to deploy an app --------
+// Body: { type: 'react'|'html', name, subdomain?, code?, html?, email }
+// Stores a pending record + sends magic link. The actual deploy happens when
+// the magic link is consumed at /auth/magic.
+app.post('/api/pending', async (req, res) => {
+  try {
+    const { type, name, subdomain: rawSub, code, html: htmlBody, email: rawEmail } = req.body || {};
+    const email = normalizeEmail(rawEmail);
+    if (!isEmail(email)) return res.status(400).json({ error: 'valid email required' });
+    if (type !== 'react' && type !== 'html') return res.status(400).json({ error: 'type must be "react" or "html"' });
+    const n = sanitizeName(name);
+    if (!n) return res.status(400).json({ error: 'invalid name' });
+    if (isReservedName(n)) return res.status(400).json({ error: `"${n}" is a reserved name` });
+    const sub = rawSub ? sanitizeName(rawSub) : n;
+    if (!sub) return res.status(400).json({ error: 'invalid subdomain' });
+    if (isReservedName(sub)) return res.status(400).json({ error: `"${sub}" is a reserved subdomain` });
+    if (type === 'react') {
+      const err = validateReactCode(code);
+      if (err) return res.status(400).json({ error: err });
+    } else {
+      if (!htmlBody || typeof htmlBody !== 'string' || htmlBody.length < 10) return res.status(400).json({ error: 'html required' });
+    }
+    // Conflict check: against react apps, html apps, and OTHER pending records
+    const apps = readJsonSync(APPS_FILE, {});
+    const html = readJsonSync(HTML_APPS_FILE, {});
+    const usedSubs = new Set([
+      ...Object.values(apps).map((a) => a.subdomain || a.name),
+      ...Object.values(html).map((a) => a.subdomain || a.name),
+      ...pendingSubdomainsInUse(),
+    ]);
+    if (usedSubs.has(sub)) return res.status(409).json({ error: `subdomain "${sub}" already in use or pending` });
+    if (apps[n] || html[n]) return res.status(409).json({ error: 'name already used' });
+
+    const payload = { type, name: n, subdomain: sub, code: code || null, html: htmlBody || null };
+    const token = await createMagicToken({ type: 'pending-deploy', email, payload });
+    const link = `${BASE_URL}/auth/magic?token=${token}`;
+    const appDomain = getDomain(sub);
+    const tpl = magicLinkEmail({ link, intent: 'deploy', appType: type, appName: n, appDomain });
+    try {
+      await sendEmail({ to: email, subject: tpl.subject, html: tpl.html, text: tpl.text });
+    } catch (e) {
+      console.error('[sendEmail/pending]', e.message);
+      return res.status(500).json({ error: 'failed to send email: ' + e.message });
+    }
+    res.json({ ok: true, message: `Magic link sent to ${email}. Click it to publish your app.` });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// -------- GET /auth/magic?token=... — consume token, deploy if pending, set session, redirect to dashboard --------
+app.get('/auth/magic', async (req, res) => {
+  try {
+    const token = String(req.query?.token || '');
+    if (!token) return res.status(400).type('text/html').send(magicErrorPage('Missing token'));
+    const t = await consumeMagicToken(token);
+    if (!t) return res.status(400).type('text/html').send(magicErrorPage('This link has expired or has already been used. Please request a new one.'));
+    const email = normalizeEmail(t.email);
+    if (!isEmail(email)) return res.status(400).type('text/html').send(magicErrorPage('Invalid email on token'));
+    const users = readJsonSync(USERS_FILE, {});
+    let user = users[email];
+    // If a record exists with email field but different username, find it
+    if (!user) {
+      for (const u of Object.values(users)) {
+        if (normalizeEmail(u.email) === email) { user = u; break; }
+      }
+    }
+    // Auto-create user if needed (magic-link users have no password, are active immediately)
+    if (!user) {
+      user = {
+        username: email,
+        email,
+        role: 'user',
+        active: true,
+        password: null,
+        createdAt: new Date().toISOString(),
+        passwordless: true,
+      };
+      users[email] = user;
+      await writeJson(USERS_FILE, users);
+    } else if (!user.active) {
+      // re-activate (defensive — magic-link confirms email)
+      user.active = true;
+      await writeJson(USERS_FILE, users);
+    }
+    // If this magic was a pending-deploy, finalize the deploy under this user.
+    if (t.type === 'pending-deploy' && t.payload) {
+      try {
+        await finalizePendingDeploy(t.payload, user);
+      } catch (e) {
+        console.error('[finalizePendingDeploy]', e.message);
+        return res.status(500).type('text/html').send(magicErrorPage(`Could not publish your app: ${e.message}`));
+      }
+    }
+    // Create session
+    const sessTok = newToken();
+    sessions.set(sessTok, { username: user.username, createdAt: Date.now() });
+    res.cookie('token', sessTok, { httpOnly: true, sameSite: 'lax', secure: true, maxAge: 7 * 24 * 3600 * 1000 });
+    // Redirect to dashboard with a banner highlight if a deploy just happened
+    const flash = (t.type === 'pending-deploy' && t.payload)
+      ? `?deployed=${encodeURIComponent(t.payload.subdomain || t.payload.name)}`
+      : '';
+    return res.redirect(302, '/' + flash);
+  } catch (e) {
+    res.status(500).type('text/html').send(magicErrorPage(e.message));
+  }
+});
+
+function magicErrorPage(msg) {
+  return `<!doctype html><html><head><meta charset="utf-8"><title>Magic link</title><style>body{font-family:system-ui;background:#0b0d12;color:#e6e9ef;padding:48px;max-width:560px;margin:0 auto}a{color:#5b9dff}</style></head><body><h2>That link didn't work</h2><p>${msg}</p><p><a href="/">Go to the dashboard</a></p></body></html>`;
+}
+
+async function finalizePendingDeploy(payload, user) {
+  const { type, name, subdomain, code, html: htmlBody } = payload;
+  const apps = readJsonSync(APPS_FILE, {});
+  const html = readJsonSync(HTML_APPS_FILE, {});
+  if (apps[name] || html[name]) throw new Error('name already used');
+  const usedSubs = new Set([
+    ...Object.values(apps).map((a) => a.subdomain || a.name),
+    ...Object.values(html).map((a) => a.subdomain || a.name),
+  ]);
+  if (usedSubs.has(subdomain)) throw new Error(`subdomain "${subdomain}" already in use`);
+  const fqdn = getDomain(subdomain);
+  if (type === 'react') {
+    await writeReactBundle(subdomain, code);
+  } else {
+    await writeHtmlBundle(subdomain, htmlBody);
+  }
+  let fqdnResult = { skipped: true };
+  try { fqdnResult = await attachFqdn(fqdn); } catch (e) { fqdnResult = { error: e.message }; console.error('[attachFqdn/finalize]', e.message); }
+  const record = {
+    name, subdomain, type, domain: fqdn, owner: user.username,
+    createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(),
+  };
+  if (type === 'react') {
+    record.code = code;
+    apps[name] = record;
+    await writeJson(APPS_FILE, apps);
+  } else {
+    record.html = htmlBody;
+    html[name] = record;
+    await writeJson(HTML_APPS_FILE, html);
+  }
+  return { record, fqdnResult };
+}
 
 app.post('/api/logout', (req, res) => {
   const token = getToken(req);
@@ -329,7 +606,7 @@ app.post('/api/logout', (req, res) => {
 });
 
 app.get('/api/auth-check', authRequired, (req, res) => {
-  res.json({ ok: true, user: { username: req.user.username, role: req.user.role } });
+  res.json({ ok: true, user: { username: req.user.username, email: req.user.email || null, role: req.user.role } });
 });
 
 // -------- change own password --------
@@ -630,7 +907,7 @@ app.get('/api/health', (_req, res) => {
   });
 });
 app.get('/api/meta', (_req, res) => {
-  res.json({ parentDomain: PARENT_DOMAIN, appDomain: APP_DOMAIN });
+  res.json({ parentDomain: PARENT_DOMAIN, appDomain: APP_DOMAIN, magicLinkEnabled: Boolean(RESEND_API_KEY) });
 });
 
 // -------- static dashboard + SPA fallback --------

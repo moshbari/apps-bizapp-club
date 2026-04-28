@@ -108,9 +108,14 @@ function toast(msg, kind = 'ok') {
 
 function renderUserBox() {
   const box = $('#userBox');
-  if (!state.user) { box.innerHTML = ''; return; }
+  if (!state.user) {
+    box.innerHTML = `<button class="btn secondary" id="btnSignIn">Sign in</button>`;
+    $('#btnSignIn').onclick = () => openSignInModal();
+    return;
+  }
+  const who = state.user.email || state.user.username;
   box.innerHTML = `
-    <span class="muted">${state.user.username} · ${state.user.role}</span>
+    <span class="muted">${who} · ${state.user.role}</span>
     <button class="btn secondary" id="btnLogout">Logout</button>`;
   $('#btnLogout').onclick = logout;
 }
@@ -119,7 +124,8 @@ async function logout() {
   await api('/api/logout', { method: 'POST' });
   state.user = null;
   renderUserBox();
-  renderAuth();
+  await refresh();
+  toast('Signed out');
 }
 
 function renderAuth() {
@@ -165,29 +171,36 @@ function renderAuth() {
 
 async function refresh() {
   try {
-    const [meta, reactApps, htmlApps] = await Promise.all([
-      api('/api/meta'),
-      api('/api/apps').catch(() => []),
-      api('/api/html-apps').catch(() => []),
-    ]);
-    state.meta = meta;
-    state.react = reactApps;
-    state.html = htmlApps;
+    state.meta = await api('/api/meta');
+    if (state.user) {
+      state.react = await api('/api/apps').catch(() => []);
+      state.html = await api('/api/html-apps').catch(() => []);
+    } else {
+      state.react = [];
+      state.html = [];
+    }
     renderDashboard();
   } catch (err) { toast(err.message, 'error'); }
 }
 
 function renderDashboard() {
   const isAdmin = state.user?.role === 'admin';
+  const isAnon = !state.user;
+  if (isAnon && state.tab !== 'react' && state.tab !== 'html') state.tab = 'react';
+  const subtitle = isAnon
+    ? 'Pick React or HTML, paste your code, give it a name. We email you a link to publish — no account needed.'
+    : 'React components or raw HTML — each gets its own subdomain with TLS.';
+  const reactLabel = `React apps${isAnon ? '' : ` (${state.react.length})`}`;
+  const htmlLabel = `HTML apps${isAnon ? '' : ` (${state.html.length})`}`;
   $('#view').innerHTML = `
     <div class="hero">
       <h1>Deploy an app to <span style="color:var(--accent)">*.${state.meta.appDomain || state.meta.parentDomain}</span></h1>
-      <div class="muted">React components or raw HTML — each gets its own subdomain with TLS.</div>
+      <div class="muted">${subtitle}</div>
     </div>
     <div class="tabs">
-      <button data-t="react" class="${state.tab === 'react' ? 'active' : ''}">React apps (${state.react.length})</button>
-      <button data-t="html" class="${state.tab === 'html' ? 'active' : ''}">HTML apps (${state.html.length})</button>
-      <button data-t="account" class="${state.tab === 'account' ? 'active' : ''}">Account</button>
+      <button data-t="react" class="${state.tab === 'react' ? 'active' : ''}">${reactLabel}</button>
+      <button data-t="html" class="${state.tab === 'html' ? 'active' : ''}">${htmlLabel}</button>
+      ${isAnon ? '' : `<button data-t="account" class="${state.tab === 'account' ? 'active' : ''}">Account</button>`}
       ${isAdmin ? `<button data-t="admin" class="${state.tab === 'admin' ? 'active' : ''}">Admin</button>` : ''}
     </div>
     <section class="panel" id="tabPanel"></section>`;
@@ -215,12 +228,16 @@ function appRow(a) {
 }
 
 function renderReactTab() {
+  const isAnon = !state.user;
+  const emptyMsg = isAnon
+    ? `<div class="muted" style="text-align:center;padding:18px 0">No apps yet — click <strong>+ New React app</strong> to deploy your first one.</div>`
+    : `<div class="muted">No React apps yet.</div>`;
   $('#tabPanel').innerHTML = `
     <div class="row" style="justify-content:space-between;margin-bottom:12px">
       <h3 style="margin:0">React apps</h3>
       <button class="btn" id="newReact">+ New React app</button>
     </div>
-    ${state.react.length === 0 ? `<div class="muted">No React apps yet.</div>` : `
+    ${state.react.length === 0 ? emptyMsg : `
     <table>
       <thead><tr><th>Name</th><th>Domain</th><th>Owner</th><th>Updated</th><th></th></tr></thead>
       <tbody>${state.react.map(appRow).join('')}</tbody>
@@ -241,12 +258,16 @@ function renderReactTab() {
 }
 
 function renderHtmlTab() {
+  const isAnon = !state.user;
+  const emptyMsg = isAnon
+    ? `<div class="muted" style="text-align:center;padding:18px 0">No apps yet — click <strong>+ New HTML app</strong> to deploy your first one.</div>`
+    : `<div class="muted">No HTML apps yet.</div>`;
   $('#tabPanel').innerHTML = `
     <div class="row" style="justify-content:space-between;margin-bottom:12px">
       <h3 style="margin:0">HTML apps</h3>
       <button class="btn" id="newHtml">+ New HTML app</button>
     </div>
-    ${state.html.length === 0 ? `<div class="muted">No HTML apps yet.</div>` : `
+    ${state.html.length === 0 ? emptyMsg : `
     <table>
       <thead><tr><th>Name</th><th>Domain</th><th>Owner</th><th>Updated</th><th></th></tr></thead>
       <tbody>${state.html.map(appRow).join('')}</tbody>
@@ -397,9 +418,15 @@ function openReactModal(existing) {
         <textarea id="rCode" spellcheck="false" placeholder="Paste your React component here. Must include export default..."></textarea>
         <div class="field-hint">Must contain <code>export default</code>. Will be rendered at the root of the page.</div>
       </div>
+      ${!isEdit && !state.user ? `
+      <div>
+        <div class="field-label">EMAIL</div>
+        <input id="rEmail" type="email" placeholder="you@example.com" autocomplete="email" required />
+        <div class="field-hint">We'll send you a one-click link to publish your app. No account needed.</div>
+      </div>` : ''}
       <div class="row" style="justify-content:flex-end;gap:8px">
         <button class="btn secondary" id="rCancel">Cancel</button>
-        <button class="btn" id="rSave">${isEdit ? 'Save' : '🚀 Deploy'}</button>
+        <button class="btn" id="rSave">${isEdit ? 'Save' : (state.user ? '🚀 Deploy' : '✉️ Send me the magic link')}</button>
       </div>
     </div>`);
   const nameInput = $('#rName', modal);
@@ -434,12 +461,21 @@ function openReactModal(existing) {
     const name = nameInput.value.trim();
     const subdomain = subInput.value.trim();
     const code = codeInput.value;
+    const emailEl = $('#rEmail', modal);
+    const isAnon = !state.user;
     try {
-      if (existing) await api(`/api/apps/${existing.name}`, { method: 'PUT', body: { code } });
-      else await api('/api/apps', { method: 'POST', body: { name, subdomain: subdomain || undefined, code } });
-      modal.remove();
-      toast(existing ? 'Saved' : 'Deployed');
-      refresh();
+      if (existing) {
+        await api(`/api/apps/${existing.name}`, { method: 'PUT', body: { code } });
+        modal.remove(); toast('Saved'); refresh();
+      } else if (isAnon) {
+        const email = emailEl?.value.trim();
+        if (!email) { toast('Email is required', 'error'); return; }
+        const r = await api('/api/pending', { method: 'POST', body: { type: 'react', name, subdomain: subdomain || undefined, code, email } });
+        showCheckYourEmailModal(modal, email, r.message);
+      } else {
+        await api('/api/apps', { method: 'POST', body: { name, subdomain: subdomain || undefined, code } });
+        modal.remove(); toast('Deployed'); refresh();
+      }
     } catch (err) { toast(err.message, 'error'); }
   };
 }
@@ -476,9 +512,15 @@ function openHtmlModal(existing) {
         <textarea id="hHtml" spellcheck="false" placeholder="Paste your full HTML page here (starting with <!DOCTYPE html>)..."></textarea>
         <div class="field-hint">Paste the complete HTML page. It will be deployed as-is.</div>
       </div>
+      ${!isEdit && !state.user ? `
+      <div>
+        <div class="field-label">EMAIL</div>
+        <input id="hEmail" type="email" placeholder="you@example.com" autocomplete="email" required />
+        <div class="field-hint">We'll send you a one-click link to publish your page. No account needed.</div>
+      </div>` : ''}
       <div class="row" style="justify-content:flex-end;gap:8px">
         <button class="btn secondary" id="hCancel">Cancel</button>
-        <button class="btn" id="hSave">${isEdit ? 'Save' : '🚀 Deploy'}</button>
+        <button class="btn" id="hSave">${isEdit ? 'Save' : (state.user ? '🚀 Deploy' : '✉️ Send me the magic link')}</button>
       </div>
     </div>`);
   const nameInput = $('#hName', modal);
@@ -513,25 +555,117 @@ function openHtmlModal(existing) {
     const name = nameInput.value.trim();
     const subdomain = subInput.value.trim();
     const html = htmlInput.value;
+    const emailEl = $('#hEmail', modal);
+    const isAnon = !state.user;
     try {
-      if (existing) await api(`/api/html-apps/${existing.name}`, { method: 'PUT', body: { html } });
-      else await api('/api/html-apps', { method: 'POST', body: { name, subdomain: subdomain || undefined, html } });
-      modal.remove();
-      toast(existing ? 'Saved' : 'Deployed');
-      refresh();
+      if (existing) {
+        await api(`/api/html-apps/${existing.name}`, { method: 'PUT', body: { html } });
+        modal.remove(); toast('Saved'); refresh();
+      } else if (isAnon) {
+        const email = emailEl?.value.trim();
+        if (!email) { toast('Email is required', 'error'); return; }
+        const r = await api('/api/pending', { method: 'POST', body: { type: 'html', name, subdomain: subdomain || undefined, html, email } });
+        showCheckYourEmailModal(modal, email, r.message);
+      } else {
+        await api('/api/html-apps', { method: 'POST', body: { name, subdomain: subdomain || undefined, html } });
+        modal.remove(); toast('Deployed'); refresh();
+      }
     } catch (err) { toast(err.message, 'error'); }
   };
+}
+
+function showCheckYourEmailModal(prevModal, email, message) {
+  if (prevModal && prevModal.remove) prevModal.remove();
+  openModal(`
+    <h3 style="margin-top:0">Check your inbox</h3>
+    <p>We sent a one-click link to <strong>${email}</strong>.</p>
+    <p class="muted">${message || 'Click it to publish your app and access the dashboard.'}</p>
+    <p class="muted" style="font-size:13px">The link expires in 24 hours. If you don't see the email, check your spam folder.</p>
+    <div class="row" style="justify-content:flex-end;gap:8px;margin-top:16px">
+      <button class="btn" id="ceyClose">Got it</button>
+    </div>
+  `, (m) => { $('#ceyClose', m).onclick = () => m.remove(); });
+}
+
+function openSignInModal() {
+  const modal = openModal(`
+    <h3 style="margin-top:0">Sign in</h3>
+    <div class="grid" style="gap:14px">
+      <div>
+        <div class="field-label">EMAIL</div>
+        <input id="siEmail" type="email" placeholder="you@example.com" autocomplete="email" />
+        <div class="field-hint">We'll email you a one-click sign-in link.</div>
+      </div>
+      <div class="row" style="justify-content:flex-end;gap:8px">
+        <button class="btn secondary" id="siCancel">Cancel</button>
+        <button class="btn" id="siSendLink">✉️ Send link</button>
+      </div>
+      <div style="border-top:1px solid var(--border);padding-top:14px">
+        <button type="button" class="btn secondary" id="siTogglePw" style="width:100%">Or sign in with admin password</button>
+        <div id="siPwBox" style="display:none;margin-top:12px">
+          <div class="grid" style="gap:10px">
+            <div>
+              <div class="field-label">USERNAME</div>
+              <input id="siUser" autocomplete="username" />
+            </div>
+            <div>
+              <div class="field-label">PASSWORD</div>
+              <input id="siPw" type="password" autocomplete="current-password" />
+            </div>
+            <div class="row" style="justify-content:flex-end;gap:8px">
+              <button class="btn" id="siPwLogin">Log in</button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>`);
+  $('#siCancel', modal).onclick = () => modal.remove();
+  $('#siSendLink', modal).onclick = async () => {
+    const email = $('#siEmail', modal).value.trim();
+    if (!email) { toast('Email is required', 'error'); return; }
+    try {
+      await api('/api/login-link', { method: 'POST', body: { email } });
+      showCheckYourEmailModal(modal, email, 'If an account exists for this address, we just sent you a sign-in link.');
+    } catch (err) { toast(err.message, 'error'); }
+  };
+  $('#siTogglePw', modal).onclick = () => {
+    const box = $('#siPwBox', modal);
+    box.style.display = box.style.display === 'none' ? 'block' : 'none';
+  };
+  $('#siPwLogin', modal).onclick = async () => {
+    const username = $('#siUser', modal).value.trim();
+    const password = $('#siPw', modal).value;
+    try {
+      const r = await api('/api/login', { method: 'POST', body: { username, password } });
+      state.user = r.user;
+      modal.remove();
+      renderUserBox();
+      await refresh();
+      toast('Signed in');
+    } catch (err) { toast(err.message, 'error'); }
+  };
+}
+
+function maybeShowDeployedBanner() {
+  const params = new URLSearchParams(location.search);
+  const sub = params.get('deployed');
+  if (!sub) return;
+  const appDomain = state.meta?.appDomain || state.meta?.parentDomain;
+  const url = `https://${sub}.${appDomain}`;
+  toast(`✅ Your app is now live at ${url}`, 'ok');
+  history.replaceState(null, '', location.pathname);
 }
 
 (async function boot() {
   try {
     const r = await api('/api/auth-check');
     state.user = r.user;
-    renderUserBox();
-    await refresh();
   } catch {
-    renderAuth();
+    state.user = null;
   }
+  renderUserBox();
+  await refresh();
+  maybeShowDeployedBanner();
 })();
 </script>
 </body>
