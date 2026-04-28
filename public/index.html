@@ -308,7 +308,10 @@ function openModal(html, onOpen) {
 }
 
 function openReactModal(existing) {
-  const sample = `export default function App() {
+  const isEdit = !!existing;
+  const title = isEdit ? 'Edit React App' : 'Deploy New React App';
+  const subInitial = existing && existing.subdomain && existing.subdomain !== existing.name ? existing.subdomain : '';
+  const placeholder = `export default function App() {
   const [n, setN] = React.useState(0);
   return (
     <div style={{fontFamily:'system-ui',padding:32}}>
@@ -318,28 +321,69 @@ function openReactModal(existing) {
   );
 }`;
   const modal = openModal(`
-    <h3 style="margin-top:0">${existing ? 'Edit' : 'New'} React app</h3>
-    <div class="grid" style="gap:10px">
+    <h3 style="margin-top:0">${title}</h3>
+    <div class="grid" style="gap:14px">
       <div>
-        <span class="code-label">Subdomain name (a-z, 0-9, -)</span>
-        <input id="rName" value="${existing?.name || ''}" ${existing ? 'readonly' : ''} />
+        <div class="field-label">PAGE NAME</div>
+        <input id="rName" placeholder="e.g. myapp" value="${existing?.name || ''}" ${isEdit ? 'readonly' : ''} autocomplete="off" />
+        <div class="field-hint">Lowercase, no spaces</div>
       </div>
       <div>
-        <span class="code-label">Component (must have <code>export default</code>)</span>
-        <textarea id="rCode" spellcheck="false">${existing?.code || sample}</textarea>
+        <div class="field-label">CUSTOM SUBDOMAIN <span class="muted" style="text-transform:none;letter-spacing:0;font-weight:400">(optional)</span></div>
+        <input id="rSub" placeholder="Leave empty to use the name above" value="${subInitial}" ${isEdit ? 'readonly' : ''} autocomplete="off" />
+      </div>
+      <div>
+        <div class="row" style="justify-content:space-between;align-items:center;margin-bottom:6px">
+          <div class="field-label" style="margin:0">COMPONENT</div>
+          <div class="row" style="gap:6px">
+            <button type="button" class="btn tiny" id="rSelectAll">⊞ Select All</button>
+            <button type="button" class="btn tiny" id="rPaste">📋 Paste</button>
+            <button type="button" class="btn tiny" id="rClear">✕ Clear</button>
+          </div>
+        </div>
+        <textarea id="rCode" spellcheck="false" placeholder="Paste your React component here. Must include export default..."></textarea>
+        <div class="field-hint">Must contain <code>export default</code>. Will be rendered at the root of the page.</div>
       </div>
       <div class="row" style="justify-content:flex-end;gap:8px">
         <button class="btn secondary" id="rCancel">Cancel</button>
-        <button class="btn" id="rSave">${existing ? 'Save' : 'Deploy'}</button>
+        <button class="btn" id="rSave">${isEdit ? 'Save' : '🚀 Deploy'}</button>
       </div>
     </div>`);
+  const nameInput = $('#rName', modal);
+  const subInput = $('#rSub', modal);
+  const codeInput = $('#rCode', modal);
+  // Set textarea value via property to avoid HTML-escape issues
+  codeInput.value = existing?.code || '';
+  const normalize = (v) => String(v || '').toLowerCase().replace(/[^a-z0-9-]/g, '-').replace(/^-+|-+$/g, '');
+  if (!isEdit) {
+    const liveNorm = (input) => input.addEventListener('input', () => {
+      const start = input.selectionStart;
+      const v = input.value;
+      const n = normalize(v);
+      if (n !== v) { input.value = n; input.setSelectionRange(start, start); }
+    });
+    liveNorm(nameInput);
+    liveNorm(subInput);
+  }
+  $('#rSelectAll', modal).onclick = () => { codeInput.focus(); codeInput.select(); };
+  $('#rPaste', modal).onclick = async () => {
+    try {
+      if (!navigator.clipboard?.readText) throw new Error('clipboard not available — paste manually');
+      const text = await navigator.clipboard.readText();
+      codeInput.value = text;
+      codeInput.focus();
+      toast('Pasted from clipboard');
+    } catch (err) { toast('Paste failed: ' + (err.message || 'permission denied'), 'error'); }
+  };
+  $('#rClear', modal).onclick = () => { codeInput.value = ''; codeInput.focus(); };
   $('#rCancel', modal).onclick = () => modal.remove();
   $('#rSave', modal).onclick = async () => {
-    const name = $('#rName', modal).value.trim();
-    const code = $('#rCode', modal).value;
+    const name = nameInput.value.trim();
+    const subdomain = subInput.value.trim();
+    const code = codeInput.value;
     try {
       if (existing) await api(`/api/apps/${existing.name}`, { method: 'PUT', body: { code } });
-      else await api('/api/apps', { method: 'POST', body: { name, code } });
+      else await api('/api/apps', { method: 'POST', body: { name, subdomain: subdomain || undefined, code } });
       modal.remove();
       toast(existing ? 'Saved' : 'Deployed');
       refresh();
