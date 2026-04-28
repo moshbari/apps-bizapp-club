@@ -536,20 +536,30 @@ app.get('/api/html-apps/:name', authRequired, (req, res) => {
 });
 app.post('/api/html-apps', authRequired, async (req, res) => {
   try {
-    const { name, html: body } = req.body || {};
+    const { name, subdomain: rawSubdomain, html: body } = req.body || {};
     const n = sanitizeName(name);
     if (!n) return res.status(400).json({ error: 'invalid name' });
     if (isReservedName(n)) return res.status(400).json({ error: `"${n}" is a reserved name` });
+    const sub = rawSubdomain ? sanitizeName(rawSubdomain) : n;
+    if (!sub) return res.status(400).json({ error: 'invalid subdomain' });
+    if (isReservedName(sub)) return res.status(400).json({ error: `"${sub}" is a reserved subdomain` });
     if (!body || typeof body !== 'string' || body.length < 10) return res.status(400).json({ error: 'html required' });
     const apps = readJsonSync(APPS_FILE, {});
     const html = readJsonSync(HTML_APPS_FILE, {});
+    // page-name uniqueness (storage key)
     if (apps[n] || html[n]) return res.status(409).json({ error: 'name already used' });
-    await writeHtmlBundle(n, body);
-    const fqdn = getDomain(n);
+    // effective-subdomain uniqueness (across both react and html apps)
+    const usedSubs = new Set([
+      ...Object.values(apps).map((a) => a.subdomain || a.name),
+      ...Object.values(html).map((a) => a.subdomain || a.name),
+    ]);
+    if (usedSubs.has(sub)) return res.status(409).json({ error: `subdomain "${sub}" already in use` });
+    await writeHtmlBundle(sub, body);
+    const fqdn = getDomain(sub);
     let fqdnResult = { skipped: true };
     try { fqdnResult = await attachFqdn(fqdn); } catch (e) { fqdnResult = { error: e.message }; }
     html[n] = {
-      name: n, type: 'html', domain: fqdn, owner: req.user.username,
+      name: n, subdomain: sub, type: 'html', domain: fqdn, owner: req.user.username,
       createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(),
       html: body,
     };
@@ -567,7 +577,7 @@ app.put('/api/html-apps/:name', authRequired, async (req, res) => {
     if (a.owner !== req.user.username && req.user.role !== 'admin') return res.status(403).json({ error: 'forbidden' });
     const { html: body } = req.body || {};
     if (!body || typeof body !== 'string') return res.status(400).json({ error: 'html required' });
-    await writeHtmlBundle(a.name, body);
+    await writeHtmlBundle(a.subdomain || a.name, body);
     a.html = body;
     a.updatedAt = new Date().toISOString();
     await writeJson(HTML_APPS_FILE, html);
@@ -582,7 +592,7 @@ app.delete('/api/html-apps/:name', authRequired, async (req, res) => {
     const a = html[req.params.name];
     if (!a) return res.status(404).json({ error: 'not found' });
     if (a.owner !== req.user.username && req.user.role !== 'admin') return res.status(403).json({ error: 'forbidden' });
-    await removeBundle(a.name);
+    await removeBundle(a.subdomain || a.name);
     let fqdnResult = { skipped: true };
     try { fqdnResult = await detachFqdn(a.domain); } catch (e) { fqdnResult = { error: e.message }; }
     delete html[a.name];

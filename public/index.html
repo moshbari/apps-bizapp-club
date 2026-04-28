@@ -69,6 +69,10 @@
   .hero h1 { margin: 0 0 8px; font-size: 26px; }
   .auth-card { max-width: 420px; margin: 48px auto; }
   .actions { display: flex; gap: 8px; flex-wrap: wrap; }
+  .field-label { font-size: 11px; color: var(--muted); margin-bottom: 6px; letter-spacing: 0.6px; font-weight: 600; text-transform: uppercase; }
+  .field-hint { font-size: 12px; color: var(--muted); margin-top: 6px; }
+  .btn.tiny { padding: 5px 10px; font-size: 12px; font-weight: 500; background: var(--panel-2); border: 1px solid var(--border); color: var(--text); }
+  .btn.tiny:hover { background: #232a3c; }
   .code-label { font-size: 12px; color: var(--muted); margin-bottom: 4px; display: block; }
 </style>
 </head>
@@ -348,34 +352,80 @@ function openHtmlModal(existing) {
 <html><head><meta charset="utf-8"><title>Hello</title>
 <style>body{font-family:system-ui;padding:32px;background:#0b0d12;color:#e6e9ef}</style>
 </head><body><h1>Hello from your HTML page</h1></body></html>`;
+  const isEdit = !!existing;
+  const title = isEdit ? 'Edit HTML Page' : 'Deploy New HTML Page';
+  const subInitial = existing && existing.subdomain && existing.subdomain !== existing.name ? existing.subdomain : '';
   const modal = openModal(`
-    <h3 style="margin-top:0">${existing ? 'Edit' : 'New'} HTML app</h3>
-    <div class="grid" style="gap:10px">
+    <h3 style="margin-top:0">${title}</h3>
+    <div class="grid" style="gap:14px">
       <div>
-        <span class="code-label">Subdomain name</span>
-        <input id="hName" value="${existing?.name || ''}" ${existing ? 'readonly' : ''} />
+        <div class="field-label">PAGE NAME</div>
+        <input id="hName" placeholder="e.g. mypage" value="${existing?.name || ''}" ${isEdit ? 'readonly' : ''} autocomplete="off" />
+        <div class="field-hint">Lowercase, no spaces</div>
       </div>
       <div>
-        <span class="code-label">HTML body (full page)</span>
-        <textarea id="hHtml" spellcheck="false">${existing?.html || sample}</textarea>
+        <div class="field-label">CUSTOM SUBDOMAIN <span class="muted" style="text-transform:none;letter-spacing:0;font-weight:400">(optional)</span></div>
+        <input id="hSub" placeholder="Leave empty to use the name above" value="${subInitial}" ${isEdit ? 'readonly' : ''} autocomplete="off" />
+      </div>
+      <div>
+        <div class="row" style="justify-content:space-between;align-items:center;margin-bottom:6px">
+          <div class="field-label" style="margin:0">HTML CODE</div>
+          <div class="row" style="gap:6px">
+            <button type="button" class="btn tiny" id="hSelectAll">⊞ Select All</button>
+            <button type="button" class="btn tiny" id="hPaste">📋 Paste</button>
+            <button type="button" class="btn tiny" id="hClear">✕ Clear</button>
+          </div>
+        </div>
+        <textarea id="hHtml" spellcheck="false" placeholder="Paste your full HTML page here (starting with <!DOCTYPE html>)..."></textarea>
+        <div class="field-hint">Paste the complete HTML page. It will be deployed as-is.</div>
       </div>
       <div class="row" style="justify-content:flex-end;gap:8px">
         <button class="btn secondary" id="hCancel">Cancel</button>
-        <button class="btn" id="hSave">${existing ? 'Save' : 'Deploy'}</button>
+        <button class="btn" id="hSave">${isEdit ? 'Save' : '🚀 Deploy'}</button>
       </div>
     </div>`);
+  const nameInput = $('#hName', modal);
+  const subInput = $('#hSub', modal);
+  const htmlInput = $('#hHtml', modal);
+  // Set textarea value via property (avoids HTML-escape issues with </textarea> in user content)
+  htmlInput.value = existing?.html || '';
+  const normalize = (v) => String(v || '').toLowerCase().replace(/[^a-z0-9-]/g, '-').replace(/^-+|-+$/g, '');
+  if (!isEdit) {
+    const liveNorm = (input) => input.addEventListener('input', () => {
+      const start = input.selectionStart;
+      const v = input.value;
+      const n = normalize(v);
+      if (n !== v) { input.value = n; input.setSelectionRange(start, start); }
+    });
+    liveNorm(nameInput);
+    liveNorm(subInput);
+  }
+  $('#hSelectAll', modal).onclick = () => { htmlInput.focus(); htmlInput.select(); };
+  $('#hPaste', modal).onclick = async () => {
+    try {
+      if (!navigator.clipboard?.readText) throw new Error('clipboard not available — paste manually');
+      const text = await navigator.clipboard.readText();
+      htmlInput.value = text;
+      htmlInput.focus();
+      toast('Pasted from clipboard');
+    } catch (err) { toast('Paste failed: ' + (err.message || 'permission denied'), 'error'); }
+  };
+  $('#hClear', modal).onclick = () => { htmlInput.value = ''; htmlInput.focus(); };
   $('#hCancel', modal).onclick = () => modal.remove();
   $('#hSave', modal).onclick = async () => {
-    const name = $('#hName', modal).value.trim();
-    const html = $('#hHtml', modal).value;
+    const name = nameInput.value.trim();
+    const subdomain = subInput.value.trim();
+    const html = htmlInput.value;
     try {
       if (existing) await api(`/api/html-apps/${existing.name}`, { method: 'PUT', body: { html } });
-      else await api('/api/html-apps', { method: 'POST', body: { name, html } });
+      else await api('/api/html-apps', { method: 'POST', body: { name, subdomain: subdomain || undefined, html } });
       modal.remove();
       toast(existing ? 'Saved' : 'Deployed');
       refresh();
     } catch (err) { toast(err.message, 'error'); }
   };
+  // If creating a fresh page, prefill the textarea with the sample so users see the expected shape.
+  if (!isEdit && !existing) htmlInput.value = sample;
 }
 
 (async function boot() {
