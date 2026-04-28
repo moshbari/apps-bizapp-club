@@ -247,8 +247,8 @@ function renderReactTab() {
     const b = e.target.closest('button'); if (!b) return;
     const name = b.dataset.name;
     if (b.dataset.act === 'edit') {
-      const a = await api(`/api/apps/${name}`);
-      openReactModal(a);
+      try { const a = await api(`/api/apps/${name}`); openReactModal(a); }
+      catch (err) { toast(err.message, 'error'); if (err.data?.error === 'unauthorized') { state.user = null; renderUserBox(); openSignInModal(); } }
     } else if (b.dataset.act === 'del') {
       if (!confirm(`Delete ${name}?`)) return;
       try { await api(`/api/apps/${name}`, { method: 'DELETE' }); toast('Deleted'); refresh(); }
@@ -277,8 +277,8 @@ function renderHtmlTab() {
     const b = e.target.closest('button'); if (!b) return;
     const name = b.dataset.name;
     if (b.dataset.act === 'edit') {
-      const a = await api(`/api/html-apps/${name}`);
-      openHtmlModal(a);
+      try { const a = await api(`/api/html-apps/${name}`); openHtmlModal(a); }
+      catch (err) { toast(err.message, 'error'); if (err.data?.error === 'unauthorized') { state.user = null; renderUserBox(); openSignInModal(); } }
     } else if (b.dataset.act === 'del') {
       if (!confirm(`Delete ${name}?`)) return;
       try { await api(`/api/html-apps/${name}`, { method: 'DELETE' }); toast('Deleted'); refresh(); }
