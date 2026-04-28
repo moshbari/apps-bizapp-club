@@ -550,15 +550,84 @@ app.get('/auth/magic', async (req, res) => {
     const sessTok = newToken();
     sessions.set(sessTok, { username: user.username, createdAt: Date.now() });
     res.cookie('token', sessTok, { httpOnly: true, sameSite: 'lax', secure: true, maxAge: 7 * 24 * 3600 * 1000 });
-    // Redirect to dashboard with a banner highlight if a deploy just happened
-    const flash = (t.type === 'pending-deploy' && t.payload)
-      ? `?deployed=${encodeURIComponent(t.payload.subdomain || t.payload.name)}`
-      : '';
-    return res.redirect(302, '/' + flash);
+    if (t.type === 'pending-deploy' && t.payload) {
+      const sub = t.payload.subdomain || t.payload.name;
+      const liveUrl = `https://${sub}.${APP_DOMAIN}`;
+      return res.type('text/html').send(magicDeployedInterstitial({ liveUrl, sub }));
+    }
+    return res.redirect(302, '/');
   } catch (e) {
     res.status(500).type('text/html').send(magicErrorPage(e.message));
   }
 });
+
+function magicDeployedInterstitial({ liveUrl, sub }) {
+  return `<!doctype html><html><head><meta charset="utf-8"><title>Publishing ${sub}...</title><style>
+    body{font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;background:#0b0d12;color:#e6e9ef;margin:0;padding:0;min-height:100vh;display:grid;place-items:center}
+    .card{background:#141821;border:1px solid #262d3d;border-radius:14px;padding:32px;max-width:520px;width:calc(100% - 32px);text-align:center}
+    h1{margin:0 0 8px;font-size:22px}
+    p{margin:0 0 16px;color:#8a93a6;line-height:1.5}
+    .url{color:#5b9dff;word-break:break-all;font-weight:500}
+    .spinner{width:32px;height:32px;border:3px solid #262d3d;border-top-color:#5b9dff;border-radius:50%;margin:18px auto;animation:spin 1s linear infinite}
+    @keyframes spin{to{transform:rotate(360deg)}}
+    .btn{display:inline-block;background:linear-gradient(135deg,#5b9dff,#7c5bff);color:white;border:0;border-radius:8px;padding:11px 18px;font-weight:600;text-decoration:none;font-size:14px;cursor:pointer;font-family:inherit}
+    .btn.secondary{background:#1b2130;border:1px solid #262d3d}
+    .btns{display:flex;gap:10px;justify-content:center;flex-wrap:wrap;margin-top:8px}
+    .ok-icon{font-size:42px}
+  </style></head><body>
+  <div class="card" id="root">
+    <div id="loading">
+      <h1>Publishing your app...</h1>
+      <p class="url">${liveUrl}</p>
+      <div class="spinner"></div>
+      <p>This usually takes 15-30 seconds while we set up DNS and TLS. <br />Please don't close this tab.</p>
+    </div>
+    <div id="ready" style="display:none">
+      <div class="ok-icon">🎉</div>
+      <h1 style="margin-top:8px">Your app is live</h1>
+      <p class="url">${liveUrl}</p>
+      <div class="btns">
+        <a class="btn" href="${liveUrl}" target="_blank" rel="noreferrer">Open live page</a>
+        <a class="btn secondary" href="/">Go to dashboard</a>
+      </div>
+    </div>
+    <div id="slow" style="display:none">
+      <h1>Still finishing up...</h1>
+      <p class="url">${liveUrl}</p>
+      <p>Provisioning is taking longer than usual. The app will be live within a minute or two. You can open it from the dashboard or try the link below.</p>
+      <div class="btns">
+        <a class="btn" href="${liveUrl}" target="_blank" rel="noreferrer">Try the live page</a>
+        <a class="btn secondary" href="/">Go to dashboard</a>
+      </div>
+    </div>
+  </div>
+  <script>
+    const url = ${JSON.stringify(liveUrl)};
+    const start = Date.now();
+    const maxMs = 90000;
+    async function probe() {
+      try {
+        const r = await fetch(url + '/?_=' + Date.now(), { method: 'GET', mode: 'no-cors', cache: 'no-store' });
+        // no-cors returns opaque; treat any non-throw as success
+        return true;
+      } catch (e) { return false; }
+    }
+    async function loop() {
+      while (Date.now() - start < maxMs) {
+        await new Promise(r => setTimeout(r, 2500));
+        if (await probe()) {
+          document.getElementById('loading').style.display = 'none';
+          document.getElementById('ready').style.display = 'block';
+          return;
+        }
+      }
+      document.getElementById('loading').style.display = 'none';
+      document.getElementById('slow').style.display = 'block';
+    }
+    loop();
+  </script>
+  </body></html>`;
+}
 
 function magicErrorPage(msg) {
   return `<!doctype html><html><head><meta charset="utf-8"><title>Magic link</title><style>body{font-family:system-ui;background:#0b0d12;color:#e6e9ef;padding:48px;max-width:560px;margin:0 auto}a{color:#5b9dff}</style></head><body><h2>That link didn't work</h2><p>${msg}</p><p><a href="/">Go to the dashboard</a></p></body></html>`;
