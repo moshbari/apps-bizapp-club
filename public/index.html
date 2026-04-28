@@ -424,8 +424,6 @@ function openHtmlModal(existing) {
       refresh();
     } catch (err) { toast(err.message, 'error'); }
   };
-  // If creating a fresh page, prefill the textarea with the sample so users see the expected shape.
-  if (!isEdit && !existing) htmlInput.value = sample;
 }
 
 (async function boot() {
