@@ -187,6 +187,7 @@ function renderDashboard() {
     <div class="tabs">
       <button data-t="react" class="${state.tab === 'react' ? 'active' : ''}">React apps (${state.react.length})</button>
       <button data-t="html" class="${state.tab === 'html' ? 'active' : ''}">HTML apps (${state.html.length})</button>
+      <button data-t="account" class="${state.tab === 'account' ? 'active' : ''}">Account</button>
       ${isAdmin ? `<button data-t="admin" class="${state.tab === 'admin' ? 'active' : ''}">Admin</button>` : ''}
     </div>
     <section class="panel" id="tabPanel"></section>`;
@@ -196,6 +197,7 @@ function renderDashboard() {
   };
   if (state.tab === 'react') renderReactTab();
   else if (state.tab === 'html') renderHtmlTab();
+  else if (state.tab === 'account') renderAccountTab();
   else if (state.tab === 'admin') renderAdminTab();
 }
 
@@ -264,6 +266,49 @@ function renderHtmlTab() {
   });
 }
 
+function renderAccountTab() {
+  const u = state.user || {};
+  $('#tabPanel').innerHTML = `
+    <div style="max-width:480px">
+      <h3 style="margin-top:0">Your account</h3>
+      <div class="muted" style="margin-bottom:18px">Logged in as <strong>${u.username || ''}</strong> · ${u.role || ''}</div>
+      <h4 style="margin:0 0 10px">Change password</h4>
+      <form id="pwForm" class="grid" style="gap:10px">
+        <div>
+          <div class="field-label">CURRENT PASSWORD</div>
+          <input name="oldPassword" type="password" autocomplete="current-password" required />
+        </div>
+        <div>
+          <div class="field-label">NEW PASSWORD</div>
+          <input name="newPassword" type="password" autocomplete="new-password" minlength="8" required />
+          <div class="field-hint">At least 8 characters.</div>
+        </div>
+        <div>
+          <div class="field-label">CONFIRM NEW PASSWORD</div>
+          <input name="confirmPassword" type="password" autocomplete="new-password" minlength="8" required />
+        </div>
+        <div class="row" style="justify-content:flex-end;gap:8px">
+          <button class="btn" type="submit">Update password</button>
+        </div>
+      </form>
+    </div>`;
+  $('#pwForm').onsubmit = async (e) => {
+    e.preventDefault();
+    const fd = new FormData(e.target);
+    const oldPassword = fd.get('oldPassword');
+    const newPassword = fd.get('newPassword');
+    const confirmPassword = fd.get('confirmPassword');
+    if (newPassword !== confirmPassword) { toast('New passwords do not match', 'error'); return; }
+    try {
+      await api('/api/change-password', { method: 'POST', body: { oldPassword, newPassword } });
+      toast('Password changed — please log in again');
+      state.user = null;
+      renderUserBox();
+      renderAuth();
+    } catch (err) { toast(err.message, 'error'); }
+  };
+}
+
 async function renderAdminTab() {
   const users = await api('/api/admin/users').catch(() => []);
   $('#tabPanel').innerHTML = `
@@ -278,6 +323,7 @@ async function renderAdminTab() {
           <td class="muted">${new Date(u.createdAt).toLocaleString()}</td>
           <td class="actions">
             <button class="btn secondary" data-act="toggle" data-name="${u.username}">${u.active ? 'Deactivate' : 'Activate'}</button>
+            <button class="btn secondary" data-act="resetpw" data-name="${u.username}">Reset password</button>
             ${u.role === 'admin' ? '' : `<button class="btn danger" data-act="del" data-name="${u.username}">Delete</button>`}
           </td>
         </tr>`).join('')}
@@ -288,6 +334,13 @@ async function renderAdminTab() {
     const name = b.dataset.name;
     try {
       if (b.dataset.act === 'toggle') { await api(`/api/admin/users/${name}/toggle`, { method: 'POST' }); }
+      else if (b.dataset.act === 'resetpw') {
+        const pw = prompt(`Set a new password for ${name} (min 8 chars):`);
+        if (pw == null) return;
+        if (pw.length < 8) { toast('Password must be at least 8 characters', 'error'); return; }
+        await api(`/api/admin/users/${name}/reset-password`, { method: 'POST', body: { newPassword: pw } });
+        toast(`Password reset for ${name}`);
+      }
       else if (b.dataset.act === 'del') {
         if (!confirm(`Delete user ${name}?`)) return;
         await api(`/api/admin/users/${name}`, { method: 'DELETE' });

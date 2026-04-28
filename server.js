@@ -449,14 +449,17 @@ async function removeBundle(name) {
 }
 
 // -------- React apps CRUD --------
-app.get('/api/apps', authRequired, (_req, res) => {
+app.get('/api/apps', authRequired, (req, res) => {
   const apps = readJsonSync(APPS_FILE, {});
-  res.json(Object.values(apps));
+  const all = Object.values(apps);
+  const visible = req.user.role === 'admin' ? all : all.filter((a) => a.owner === req.user.username);
+  res.json(visible);
 });
 app.get('/api/apps/:name', authRequired, (req, res) => {
   const apps = readJsonSync(APPS_FILE, {});
   const a = apps[req.params.name];
   if (!a) return res.status(404).json({ error: 'not found' });
+  if (a.owner !== req.user.username && req.user.role !== 'admin') return res.status(403).json({ error: 'forbidden' });
   res.json(a);
 });
 app.post('/api/apps', authRequired, async (req, res) => {
@@ -534,14 +537,17 @@ app.delete('/api/apps/:name', authRequired, async (req, res) => {
 });
 
 // -------- HTML apps CRUD --------
-app.get('/api/html-apps', authRequired, (_req, res) => {
+app.get('/api/html-apps', authRequired, (req, res) => {
   const html = readJsonSync(HTML_APPS_FILE, {});
-  res.json(Object.values(html));
+  const all = Object.values(html);
+  const visible = req.user.role === 'admin' ? all : all.filter((a) => a.owner === req.user.username);
+  res.json(visible);
 });
 app.get('/api/html-apps/:name', authRequired, (req, res) => {
   const html = readJsonSync(HTML_APPS_FILE, {});
   const a = html[req.params.name];
   if (!a) return res.status(404).json({ error: 'not found' });
+  if (a.owner !== req.user.username && req.user.role !== 'admin') return res.status(403).json({ error: 'forbidden' });
   res.json(a);
 });
 app.post('/api/html-apps', authRequired, async (req, res) => {
